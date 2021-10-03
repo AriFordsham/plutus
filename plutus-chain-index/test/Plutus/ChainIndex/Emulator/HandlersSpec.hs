@@ -18,14 +18,17 @@ import           Control.Monad.IO.Class              (liftIO)
 import           Data.Sequence                       (Seq)
 import           Data.Set                            (member)
 import qualified Generators                          as Gen
-import           Hedgehog                            (Property, assert, forAll, property, (===))
-import           Ledger                              (Address (Address, addressCredential), TxOut (TxOut, txOutAddress))
+import           Ledger                              (Address (Address, addressCredential), TxOut (TxOut, txOutAddress),
+                                                      outValue)
 import           Plutus.ChainIndex                   (ChainIndexLog, Page (pageItems), PageQuery (PageQuery),
-                                                      appendBlock, txFromTxId, utxoSetAtAddress)
+                                                      appendBlock, txFromTxId, utxoSetAtAddress, utxoSetWithCurrency)
 import           Plutus.ChainIndex.ChainIndexError   (ChainIndexError)
 import           Plutus.ChainIndex.Effects           (ChainIndexControlEffect, ChainIndexQueryEffect)
 import           Plutus.ChainIndex.Emulator.Handlers (ChainIndexEmulatorState, handleControl, handleQuery)
 import           Plutus.ChainIndex.Tx                (_ValidTx, citxOutputs, citxTxId)
+import           Plutus.V1.Ledger.Value              (AssetClass (AssetClass), flattenValue)
+
+import           Hedgehog                            (Property, assert, forAll, property, (===))
 import           Test.Tasty
 import           Test.Tasty.Hedgehog                 (testProperty)
 
@@ -36,7 +39,10 @@ tests = do
       [ testProperty "get tx from tx id" txFromTxIdSpec
       ]
     , testGroup "utxoSetAtAddress"
-      [ testProperty "each txOutRef should be unspent" eachTxOutRefShouldBeUnspentSpec
+      [ testProperty "each txOutRef should be unspent" eachTxOutRefAtAddressShouldBeUnspentSpec
+      ]
+    , testGroup "utxoSetWithCurrency"
+      [ testProperty "each txOutRef should be unspent" eachTxOutRefWithCurrencyShouldBeUnspentSpec
       ]
     ]
 
@@ -59,8 +65,8 @@ txFromTxIdSpec = property $ do
 -- | After generating and appending a block in the chain index, verify that
 -- querying the chain index with each of the addresses in the block returns
 -- unspent 'TxOutRef's.
-eachTxOutRefShouldBeUnspentSpec :: Property
-eachTxOutRefShouldBeUnspentSpec = property $ do
+eachTxOutRefAtAddressShouldBeUnspentSpec :: Property
+eachTxOutRefAtAddressShouldBeUnspentSpec = property $ do
   ((tip, block), state) <- forAll $ Gen.runTxGenState Gen.genNonEmptyBlock
 
   let addresses =
@@ -72,8 +78,35 @@ eachTxOutRefShouldBeUnspentSpec = property $ do
     appendBlock tip block
 
     forM addresses $ \addr -> do
-      let pq = PageQuery 50 Nothing
+      let pq = PageQuery 200 Nothing
       (_, utxoRefs) <- utxoSetAtAddress pq addr
+      pure $ pageItems utxoRefs
+
+  case result of
+    Left _ -> Hedgehog.assert False
+    Right utxoRefsGroups -> do
+      forM_ (concat utxoRefsGroups) $ \utxoRef -> do
+        Hedgehog.assert $ utxoRef `member` view Gen.txgsUtxoSet state
+
+-- | After generating and appending a block in the chain index, verify that
+-- querying the chain index with each of the asset classes in the block returns
+-- unspent 'TxOutRef's.
+eachTxOutRefWithCurrencyShouldBeUnspentSpec :: Property
+eachTxOutRefWithCurrencyShouldBeUnspentSpec = property $ do
+  ((tip, block), state) <- forAll $ Gen.runTxGenState Gen.genNonEmptyBlock
+
+  let assetClasses =
+        fmap (\(c, t, _) -> AssetClass (c, t))
+             $ flattenValue
+             $ view (traverse . citxOutputs . _ValidTx . traverse . outValue) block
+
+  result <- liftIO $ runEmulatedChainIndex mempty $ do
+    -- Append the generated block in the chain index
+    appendBlock tip block
+
+    forM assetClasses $ \ac -> do
+      let pq = PageQuery 200 Nothing
+      (_, utxoRefs) <- utxoSetWithCurrency pq ac
       pure $ pageItems utxoRefs
 
   case result of

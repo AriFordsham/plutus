@@ -6,15 +6,9 @@
 {-# LANGUAGE FlexibleInstances    #-}
 {-# LANGUAGE GADTs                #-}
 {-# LANGUAGE ImpredicativeTypes   #-}
-{-# LANGUAGE LambdaCase           #-}
-{-# LANGUAGE NamedFieldPuns       #-}
 {-# LANGUAGE OverloadedStrings    #-}
-{-# LANGUAGE TemplateHaskell      #-}
-{-# LANGUAGE TypeApplications     #-}
 {-# LANGUAGE TypeFamilies         #-}
-{-# LANGUAGE TypeOperators        #-}
 {-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE ViewPatterns         #-}
 {-# options_ghc -Wno-missing-signatures #-}
 {-
 
@@ -86,6 +80,21 @@ instance Table AddressRowT where
     data PrimaryKey AddressRowT f = AddressRowId (Columnar f ByteString) (Columnar f ByteString) deriving (Generic, Beamable)
     primaryKey (AddressRow c o) = AddressRowId c o
 
+data AssetClassRowT f = AssetClassRow
+    { _assetClassRowAssetClass :: Columnar f ByteString
+    , _assetClassRowOutRef     :: Columnar f ByteString
+    } deriving (Generic, Beamable)
+
+type AssetClassRow = AssetClassRowT Identity
+
+instance Table AssetClassRowT where
+    -- We also need an index on just the _assetClassRowAssetClass column, but the primary key index provides this
+    -- as long as _assetClassRowAssetClass is the first column in the primary key.
+    data PrimaryKey AssetClassRowT f = AssetClassRowId (Columnar f ByteString)
+                                                       (Columnar f ByteString)
+      deriving (Generic, Beamable)
+    primaryKey (AssetClassRow c o) = AssetClassRowId c o
+
 data TipRowT f = TipRow
     { _tipRowSlot        :: Columnar f Word64 -- In Plutus Slot is Integer, but in the Cardano API it is Word64, so this is safe
     , _tipRowBlockId     :: Columnar f ByteString
@@ -135,6 +144,7 @@ data Db f = Db
     , scriptRows         :: f (TableEntity ScriptRowT)
     , txRows             :: f (TableEntity TxRowT)
     , addressRows        :: f (TableEntity AddressRowT)
+    , assetClassRows     :: f (TableEntity AssetClassRowT)
     , tipRows            :: f (TableEntity TipRowT)
     , unspentOutputRows  :: f (TableEntity UnspentOutputRowT)
     , unmatchedInputRows :: f (TableEntity UnmatchedInputRowT)
@@ -145,6 +155,7 @@ type AllTables (c :: * -> Constraint) f =
     , c (f (TableEntity ScriptRowT))
     , c (f (TableEntity TxRowT))
     , c (f (TableEntity AddressRowT))
+    , c (f (TableEntity AssetClassRowT))
     , c (f (TableEntity TipRowT))
     , c (f (TableEntity UnspentOutputRowT))
     , c (f (TableEntity UnmatchedInputRowT))
@@ -162,6 +173,7 @@ checkedSqliteDb = defaultMigratableDbSettings
     , scriptRows  = renameCheckedEntity (const "scripts")
     , txRows      = renameCheckedEntity (const "txs")
     , addressRows = renameCheckedEntity (const "addresses")
+    , assetClassRows = renameCheckedEntity (const "asset_classes")
     , tipRows     = renameCheckedEntity (const "tips")
     , unspentOutputRows  = renameCheckedEntity (const "unspent_outputs")
     , unmatchedInputRows = renameCheckedEntity (const "unmatched_inputs")

@@ -26,14 +26,16 @@ import qualified Database.Beam.Sqlite.Migrate      as Sqlite
 import qualified Database.SQLite.Simple            as Sqlite
 import qualified Generators                        as Gen
 import           Hedgehog                          (Property, assert, forAll, property, (===))
-import           Ledger                            (Address (Address, addressCredential), TxOut (TxOut, txOutAddress))
+import           Ledger                            (Address (Address, addressCredential), TxOut (TxOut, txOutAddress),
+                                                    outValue)
 import           Plutus.ChainIndex                 (ChainIndexLog, Page (pageItems), PageQuery (PageQuery), appendBlock,
-                                                    citxOutputs, txFromTxId, utxoSetAtAddress)
+                                                    citxOutputs, txFromTxId, utxoSetAtAddress, utxoSetWithCurrency)
 import           Plutus.ChainIndex.ChainIndexError (ChainIndexError (..))
 import           Plutus.ChainIndex.DbSchema        (checkedSqliteDb)
 import           Plutus.ChainIndex.Effects         (ChainIndexControlEffect, ChainIndexQueryEffect)
 import           Plutus.ChainIndex.Handlers        (ChainIndexState, handleControl, handleQuery)
 import           Plutus.ChainIndex.Tx              (_ValidTx, citxTxId)
+import           Plutus.V1.Ledger.Value            (AssetClass (AssetClass), flattenValue)
 import           Test.Tasty
 import           Test.Tasty.Hedgehog               (testProperty)
 
@@ -44,7 +46,10 @@ tests = do
       [ testProperty "get tx from tx id" txFromTxIdSpec
       ]
     , testGroup "utxoSetAtAddress"
-      [ testProperty "each txOutRef should be unspent" eachTxOutRefShouldBeUnspentSpec
+      [ testProperty "each txOutRef should be unspent" eachTxOutRefAtAddressShouldBeUnspentSpec
+      ]
+    , testGroup "utxoSetWithCurrency"
+      [ testProperty "each txOutRef should be unspent" eachTxOutRefWithCurrencyShouldBeUnspentSpec
       ]
     ]
 
@@ -69,8 +74,8 @@ txFromTxIdSpec = property $ do
 -- | After generating and appending a block in the chain index, verify that
 -- querying the chain index with each of the addresses in the block returns
 -- unspent 'TxOutRef's.
-eachTxOutRefShouldBeUnspentSpec :: Property
-eachTxOutRefShouldBeUnspentSpec = property $ do
+eachTxOutRefAtAddressShouldBeUnspentSpec :: Property
+eachTxOutRefAtAddressShouldBeUnspentSpec = property $ do
   ((tip, block), state) <- forAll $ Gen.runTxGenState Gen.genNonEmptyBlock
 
   let addresses =
@@ -88,6 +93,34 @@ eachTxOutRefShouldBeUnspentSpec = property $ do
         (_, utxoRefs) <- utxoSetAtAddress pq addr
         pure $ pageItems utxoRefs
 
+  case result of
+    Left _ -> Hedgehog.assert False
+    Right utxoRefsGroups -> do
+      forM_ (concat utxoRefsGroups) $ \utxoRef -> do
+        Hedgehog.assert $ utxoRef `member` view Gen.txgsUtxoSet state
+
+-- | After generating and appending a block in the chain index, verify that
+-- querying the chain index with each of the addresses in the block returns
+-- unspent 'TxOutRef's.
+eachTxOutRefWithCurrencyShouldBeUnspentSpec :: Property
+eachTxOutRefWithCurrencyShouldBeUnspentSpec = property $ do
+  ((tip, block), state) <- forAll $ Gen.runTxGenState Gen.genNonEmptyBlock
+
+  let assetClasses =
+        fmap (\(c, t, _) -> AssetClass (c, t))
+             $ flattenValue
+             $ view (traverse . citxOutputs . _ValidTx . traverse . outValue) block
+
+  result <- liftIO $ Sqlite.withConnection ":memory:" $ \conn -> do
+    Sqlite.runBeamSqlite conn $ autoMigrate Sqlite.migrationBackend checkedSqliteDb
+    liftIO $ runChainIndex mempty conn $ do
+      -- Append the generated block in the chain index
+      appendBlock tip block
+
+      forM assetClasses $ \ac -> do
+        let pq = PageQuery 200 Nothing
+        (_, utxoRefs) <- utxoSetWithCurrency pq ac
+        pure $ pageItems utxoRefs
 
   case result of
     Left _ -> Hedgehog.assert False

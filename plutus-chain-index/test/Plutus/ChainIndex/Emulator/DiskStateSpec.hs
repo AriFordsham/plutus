@@ -20,6 +20,7 @@ tests = do
   testGroup "emulator"
     [ testGroup "disk state"
         [ testProperty "same txOuts between AddressMap and ChainIndexTx" addressMapAndTxShouldShareTxOuts
+        , testProperty "same txOuts between AssetClassMap and ChainIndexTx" assetClassMapAndTxShouldShareTxOuts
         ]
     ]
 
@@ -33,3 +34,12 @@ addressMapAndTxShouldShareTxOuts = property $ do
         addressMapTxOutRefs =
           mconcat $ diskState ^.. DiskState.addressMap . DiskState.unCredentialMap . folded
     ciTxOutRefs === addressMapTxOutRefs
+
+assetClassMapAndTxShouldShareTxOuts :: Property
+assetClassMapAndTxShouldShareTxOuts = property $ do
+    chainIndexTx <- forAll $ Gen.evalTxGenState Gen.genTx
+    let diskState = DiskState.fromTx chainIndexTx
+        ciTxOutRefs = Set.fromList $ fmap snd $ txOutsWithRef chainIndexTx
+        assetClassMapTxOutRefs =
+          mconcat $ diskState ^.. DiskState.assetClassMap . DiskState.unAssetClassMap . folded
+    ciTxOutRefs === assetClassMapTxOutRefs
